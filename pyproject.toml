@@ -1,15 +1,21 @@
 [project]
-name = "mlprep"
+name = "nanolm"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "Justin Chiu", email = "justinchiu@g.harvard.edu" }
+    { name = "Justin Chiu", email = "chiu.justin.t@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "datasets>=3.6.0",
+    "numpy>=2.2.6",
+    "tiktoken>=0.9.0",
     "torch>=2.7.1",
     "torchvision>=0.22.1",
+    "tqdm>=4.67.1",
+    "transformers>=4.52.4",
+    "wandb>=0.20.1",
 ]
 
 [build-system]
