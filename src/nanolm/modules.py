@@ -12,7 +12,7 @@ class Mha(nn.Module):
         bound = (3 ** 0.5) * std
         self.qkv_proj = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
         # causal_mask[target, source]: can target attend to source
-        self.causal_mask = nn.Buffer(torch.ones(maxseqlen, maxseqlen))
+        self.causal_mask = nn.Buffer(torch.ones(maxseqlen, maxseqlen, dtype=torch.bool))
         for i in range(0, maxseqlen):
             self.causal_mask.diagonal(i).add_(-1)
 
