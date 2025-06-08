@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+import math
 import torch
 from torch import nn, Tensor
+import torch.nn.functional as F
 from nanolm.modules import SlowMha, Rotary
 
 
@@ -10,11 +12,10 @@ class Config:
     n_embd: int
     n_head: int
     bias: bool = False
-    dropout: float = 0.
+    dropout: float = 0.0
 
 
 class CausalSelfAttention(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -29,38 +30,61 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
         if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+            print(
+                "WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0"
+            )
             # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
+            self.bias = nn.Buffer(
+                torch.tril(torch.ones(config.block_size, config.block_size)).view(
+                    1, 1, config.block_size, config.block_size
+                )
+            )
 
     def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = (
+            x.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=True,
+            )
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = (
+            y.transpose(1, 2).contiguous().view(B, T, C)
+        )  # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
+
 
 # llama rotary embeddings
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
@@ -139,10 +163,11 @@ def apply_rotary_emb(
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+
 def test_mha():
-    B,T,D = (2, 4, 8)
+    B, T, D = (2, 4, 8)
     nheads = 2
-    x = torch.rand(B,T,D)
+    x = torch.rand(B, T, D)
 
     mha_torch = nn.MultiheadAttention(D, nheads, batch_first=True, bias=False)
     config = Config(D, nheads)
@@ -150,12 +175,21 @@ def test_mha():
     mha = SlowMha(D, nheads, T, D // nheads)
 
     # convert weights
-    mha_torch.in_proj_weight.data.copy_(mha.qkv_proj.data.view_as(mha_torch.in_proj_weight.data))
+    mha_torch.in_proj_weight.data.copy_(
+        mha.qkv_proj.data.view_as(mha_torch.in_proj_weight.data)
+    )
     mha_torch.out_proj.weight.data.copy_(mha.out_proj.weight.data)
-    mha_nano.c_attn.weight.data.copy_(mha.qkv_proj.data.reshape(3*D, D))
+    mha_nano.c_attn.weight.data.copy_(mha.qkv_proj.data.reshape(3 * D, D))
     mha_nano.c_proj.weight.data.copy_(mha.out_proj.weight.data)
 
-    attn_output, attn_weights = mha_torch(x, x, x, attn_mask=mha.causal_mask.logical_not(), is_causal=True, average_attn_weights=False)
+    attn_output, attn_weights = mha_torch(
+        x,
+        x,
+        x,
+        attn_mask=mha.causal_mask.logical_not(),
+        is_causal=True,
+        average_attn_weights=False,
+    )
     nano_output = mha_nano(x)
     output, weights = mha(x)
 
@@ -163,8 +197,9 @@ def test_mha():
     assert torch.allclose(attn_output, output)
     assert torch.allclose(nano_output, output)
 
+
 def test_rotary():
-    B,T,H,D = (5, 6, 2, 8)
+    B, T, H, D = (5, 6, 2, 8)
     x = torch.ones(B, T, H, D)
     rotary = Rotary(D, T)
     y = rotary(x)
