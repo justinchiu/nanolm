@@ -13,11 +13,12 @@ class Rotary(nn.Module):
         t = torch.arange(maxseqlen)
         # rotations at each timestep
         freqs = torch.outer(t, speed)
+        # time x dim//2 (x complex)
         self.freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
 
     def forward(self, x: Tensor) -> Tensor:
         """Apply rotations at each timesteps"""
-        # batch x time x nheads x head_dim
+        # batch x time x nheads x head_dim (x complex)
         xc = torch.view_as_complex(x.view(*x.shape[:-1], -1, 2))
         return torch.view_as_real(xc * self.freqs_cis[None,:,None,:]).flatten(-2)
 
