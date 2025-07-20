@@ -87,8 +87,8 @@ class Block(nn.Module):
         self.ffn = Ffn(dim)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = x + self.mha(x)[0]
-        x = x + self.ffn(x)
+        x = x + self.mha(norm(x))[0]
+        x = x + self.ffn(norm(x))
         return x
 
 
