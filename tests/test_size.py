@@ -12,9 +12,7 @@ def format_memory(bytes_val):
     return bytes_val / 1024**2
 
 
-def measure_memory_usage(
-    model_id="meta-llama/Llama-3.1-8B", seq_length=20, batch_size=2
-):
+def measure_memory_usage(model_id, seq_length, batch_size):
     """Measure memory usage using PyTorch profiler"""
 
     device = "cpu"
@@ -204,7 +202,7 @@ def measure_memory_usage(
 if __name__ == "__main__":
     # Test with different configurations
     results = measure_memory_usage(
-        model_id="meta-llama/Llama-3.1-8B", seq_length=512, batch_size=1
+        model_id="meta-llama/Llama-3.1-8B", seq_length=20, batch_size=2
     )
 
     print("\n" + "=" * 50)
