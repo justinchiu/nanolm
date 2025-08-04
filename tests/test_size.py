@@ -64,16 +64,21 @@ def measure_memory_usage(model_id, seq_length, batch_size):
         activities=activities, profile_memory=True, record_shapes=True, with_stack=True
     ) as prof:
         # Clear gradients
+        print("\nClearing gradients...")
         model.zero_grad()
 
         # Forward pass
+        print("Starting forward pass...")
         with record_function("forward_pass"):
             outputs = model(**inputs, labels=inputs["input_ids"])
             loss = outputs.loss
+            print(f"Forward pass complete! Loss: {loss.item():.4f}")
 
         # Backward pass
+        print("Starting backward pass...")
         with record_function("backward_pass"):
             loss.backward()
+            print("Backward pass complete!")
 
     # Print profiler results
     print("\nMemory usage by operation:")
@@ -202,7 +207,7 @@ def measure_memory_usage(model_id, seq_length, batch_size):
 if __name__ == "__main__":
     # Test with different configurations
     results = measure_memory_usage(
-        model_id="meta-llama/Llama-3.1-8B", seq_length=20, batch_size=2
+        model_id="Qwen/Qwen2.5-1.5B", seq_length=20, batch_size=2
     )
 
     print("\n" + "=" * 50)
