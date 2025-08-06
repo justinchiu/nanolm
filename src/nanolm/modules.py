@@ -28,10 +28,18 @@ class Rotary(nn.Module):
 class SlowMha(nn.Module):
     """Self attention only"""
 
-    def __init__(self, dim: int, nheads: int, maxseqlen: int, head_dim=128):
+    def __init__(
+        self,
+        dim: int,
+        nheads: int,
+        maxseqlen: int,
+        head_dim: int = 128,
+        pos: bool = True,
+    ):
         super().__init__()
         self.nheads = nheads
         self.head_dim = head_dim
+        self.pos = pos
         hdim = nheads * head_dim
         std = 0.5 * (dim**-0.5)
         bound = (3**0.5) * std
@@ -48,8 +56,9 @@ class SlowMha(nn.Module):
         B, T, D = x.shape
         qkv = torch.einsum("btd,ahd->btah", x, self.qkv_proj)
         q, k, v = qkv.view(B, T, 3 * self.nheads, self.head_dim).chunk(3, dim=-2)
-        # q = self.rotary(q)
-        # k = self.rotary(k)
+        if self.pos:
+            q = self.rotary(q)
+            k = self.rotary(k)
         logits = torch.einsum("btnh,bsnh->bnts", q, k) * (self.head_dim**-0.5)
         masked_logits = logits.masked_fill(
             self.causal_mask.logical_not(), float("-inf")
