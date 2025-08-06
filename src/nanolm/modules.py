@@ -36,7 +36,7 @@ class SlowMha(nn.Module):
         std = 0.5 * (dim**-0.5)
         bound = (3**0.5) * std
         self.qkv_proj = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
-        self.rotary = Rotary(dim, maxseqlen)
+        self.rotary = Rotary(head_dim, maxseqlen)
         # causal_mask[target, source]: can target attend to source
         # should be lower triangular
         self.causal_mask = nn.Buffer(torch.ones(maxseqlen, maxseqlen, dtype=torch.bool))
@@ -48,8 +48,6 @@ class SlowMha(nn.Module):
         B, T, D = x.shape
         qkv = torch.einsum("btd,ahd->btah", x, self.qkv_proj)
         q, k, v = qkv.view(B, T, 3 * self.nheads, self.head_dim).chunk(3, dim=-2)
-        q = self.rotary(q)
-        k = self.rotary(k)
         logits = torch.einsum("btnh,bsnh->bnts", q, k) * (self.head_dim**-0.5)
         masked_logits = logits.masked_fill(
             self.causal_mask.logical_not(), float("-inf")
