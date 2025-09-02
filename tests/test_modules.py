@@ -42,7 +42,7 @@ class CausalSelfAttention(nn.Module):
                 )
             )
 
-    def forward(self, x):
+    def forward(self, x, freq_cis):
         B, T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
@@ -58,6 +58,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(
             1, 2
         )  # (B, nh, T, hs)
+        q, k = apply_rotary_emb(q, k, freq_cis)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -130,8 +131,8 @@ def reshape_for_broadcast(freqs_cis: Tensor, x: Tensor):
     """
     ndim = x.ndim
     assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    assert freqs_cis.shape == (x.shape[-2], x.shape[-1])
+    shape = [d if i == ndim - 2 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     return freqs_cis.view(*shape)
 
 
@@ -173,6 +174,7 @@ def test_mha():
     config = Config(D, nheads)
     mha_nano = CausalSelfAttention(config)
     mha = SlowMha(D, nheads, T, D // nheads)
+    mha_nopos = SlowMha(D, nheads, T, D // nheads, pos=False)
 
     # convert weights
     mha_torch.in_proj_weight.data.copy_(
@@ -181,6 +183,8 @@ def test_mha():
     mha_torch.out_proj.weight.data.copy_(mha.out_proj.weight.data)
     mha_nano.c_attn.weight.data.copy_(mha.qkv_proj.data.reshape(3 * D, D))
     mha_nano.c_proj.weight.data.copy_(mha.out_proj.weight.data)
+    mha_nopos.qkv_proj.data.copy_(mha.qkv_proj.data)
+    mha_nopos.out_proj.weight.data.copy_(mha.out_proj.weight.data)
 
     attn_output, attn_weights = mha_torch(
         x,
@@ -190,11 +194,14 @@ def test_mha():
         is_causal=True,
         average_attn_weights=False,
     )
-    nano_output = mha_nano(x)
+    freqs_cis = precompute_freqs_cis(D // nheads, T)
+    nano_output = mha_nano(x, freqs_cis)
     output, weights = mha(x)
+    output_nopos, weights_nopos = mha_nopos(x)
 
-    assert torch.allclose(attn_weights, weights)
-    assert torch.allclose(attn_output, output)
+    assert torch.allclose(attn_weights, weights_nopos)
+    assert torch.allclose(attn_output, output_nopos)
+
     assert torch.allclose(nano_output, output)
 
 
@@ -204,5 +211,7 @@ def test_rotary():
     rotary = Rotary(D, T)
     y = rotary(x)
     freqs_cis = precompute_freqs_cis(D, T)
-    y_llama, _ = apply_rotary_emb(x, x, freqs_cis=freqs_cis)
-    assert torch.allclose(y, y_llama)
+    y_llama, _ = apply_rotary_emb(
+        x.transpose(1, 2), x.transpose(1, 2), freqs_cis=freqs_cis
+    )
+    assert torch.allclose(y, y_llama.transpose(1, 2))
