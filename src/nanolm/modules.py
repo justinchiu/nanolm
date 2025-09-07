@@ -1,6 +1,14 @@
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
+from pydantic import BaseModel
+
+
+class AttentionOutput(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+    
+    logprobs: Tensor
+    attentions: list[Tensor]
 
 
 class Rotary(nn.Module):
@@ -96,9 +104,10 @@ class Block(nn.Module):
         self.ffn = Ffn(dim)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = x + self.mha(norm(x))[0]
+        attn_out, attn = self.mha(norm(x))
+        x = x + attn_out
         x = x + self.ffn(norm(x))
-        return x
+        return x, attn
 
 
 class Transformer(nn.Module):
@@ -111,16 +120,20 @@ class Transformer(nn.Module):
         self.output_proj = nn.Linear(dim, vocab, bias=False)
         self.output_proj.weight.data.zero_()
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor) -> Tensor:
+    def forward(self, input_seq: Tensor, target_seq: Tensor | None) -> AttentionOutput:
         x = self.emb(input_seq)
+        attns = []
         for block in self.blocks:
-            x = block(x)
+            x, attn = block(x)
+            attns.append(attn)
         x = self.output_proj(x).log_softmax(-1)
-        x = x.log_softmax(-1)
-        logprobs = x.gather(-1, target_seq[:, :, None]).squeeze()
+        logprobs = x.log_softmax(-1)
+        if target_seq is not None:
+            # ideally use sparse softmax
+            logprobs = x.gather(-1, target_seq[:, :, None]).squeeze()
         # lp = F.cross_entropy(x.view(-1, x.shape[-1]), target_seq.view(-1), reduction="none")
         # assert torch.allclose(logprobs, lp)
-        return logprobs
+        return AttentionOutput(logprobs=logprobs, attentions=attns)
 
 
 if __name__ == "__main__":
