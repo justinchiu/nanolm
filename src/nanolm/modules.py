@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 class AttentionOutput(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
-    
+
     logprobs: Tensor
     attentions: list[Tensor]
 
