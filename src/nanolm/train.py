@@ -4,7 +4,6 @@ from torch.utils.data import DataLoader
 import numpy as np
 from datasets import load_dataset
 from tqdm import tqdm
-import wandb
 from pathlib import Path
 import json
 from typing import Optional
@@ -48,7 +47,7 @@ class TextDataset:
 def get_dataloader(
     dataset_name: str = "roneneldan/TinyStories",
     split: str = "train",
-    seq_len: int = 512,
+    seq_len: int = 2048,
     batch_size: int = 32,
     num_workers: int = 4,
     max_samples: Optional[int] = None,
@@ -213,7 +212,6 @@ def train(
     max_train_samples: Optional[int] = 100000,
     max_val_samples: Optional[int] = 10000,
     # Logging config
-    use_wandb: bool = False,
     checkpoint_dir: str = "./checkpoints",
     eval_every: int = 500,
     save_every: int = 1000,
@@ -223,20 +221,6 @@ def train(
     # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
-    # Initialize wandb if requested
-    if use_wandb:
-        wandb.init(
-            project="nanolm",
-            config={
-                "vocab_size": vocab_size,
-                "n_blocks": n_blocks,
-                "dim": dim,
-                "n_heads": n_heads,
-                "batch_size": batch_size * grad_accum_steps,
-                "learning_rate": learning_rate,
-            },
-        )
 
     # Create model
     model = Transformer(vocab_size, n_blocks, dim, n_heads, max_seq_len)
@@ -302,17 +286,6 @@ def train(
                 }
             )
 
-            # Log to wandb
-            if use_wandb and global_step % 10 == 0:
-                wandb.log(
-                    {
-                        "train/loss": metrics["loss"],
-                        "train/perplexity": metrics["perplexity"],
-                        "train/lr": scheduler.get_last_lr()[0],
-                        "step": global_step,
-                    }
-                )
-
             # Evaluate
             if global_step % eval_every == 0 and global_step > 0:
                 val_metrics = evaluate(model, val_loader, device)
@@ -320,15 +293,6 @@ def train(
                     f"\nValidation - Loss: {val_metrics['val_loss']:.4f}, "
                     f"Perplexity: {val_metrics['val_perplexity']:.2f}"
                 )
-
-                if use_wandb:
-                    wandb.log(
-                        {
-                            "val/loss": val_metrics["val_loss"],
-                            "val/perplexity": val_metrics["val_perplexity"],
-                            "step": global_step,
-                        }
-                    )
 
             # Save checkpoint
             if global_step % save_every == 0 and global_step > 0:
@@ -366,30 +330,51 @@ def train(
     )
     print(f"Saved final model: {final_checkpoint}")
 
-    if use_wandb:
-        wandb.finish()
-
     return model
 
 
 if __name__ == "__main__":
-    # Example usage
-    model = train(
-        # Small model for testing
-        n_blocks=4,
-        dim=256,
-        n_heads=4,
-        max_seq_len=256,
-        # Small batches for testing
-        batch_size=8,
-        grad_accum_steps=2,
-        learning_rate=1e-3,
-        num_epochs=2,
-        # Limited data for testing
-        max_train_samples=1000,
-        max_val_samples=100,
-        # No wandb by default
-        use_wandb=False,
-        eval_every=50,
-        save_every=100,
-    )
+    # Simple test with 10 sentences
+    SENTENCES = [
+        "The cat sat on the mat.",
+        "Dogs love to play fetch.",
+        "The sun rises in the east.",
+        "Birds fly high in the sky.",
+        "Fish swim in the ocean.",
+        "Trees grow tall in the forest.",
+        "Flowers bloom in spring.",
+        "Rain falls from the clouds.",
+        "Stars shine bright at night.",
+        "The moon lights up the darkness.",
+    ]
+    
+    # Create simple dataloaders from sentences  
+    tokenizer = tiktoken.get_encoding("gpt2")
+    # Repeat sentences to have more tokens
+    train_sentences = SENTENCES * 10  # Repeat 10 times for more data
+    train_dataset = TextDataset(train_sentences, seq_len=32, tokenizer=tokenizer)
+    val_dataset = TextDataset(SENTENCES[-2:] * 5, seq_len=32, tokenizer=tokenizer)  # Last 2 for validation
+    
+    train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True, drop_last=False)
+    val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False, drop_last=False)
+    
+    # Small model for testing
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = Transformer(50257, nblocks=2, dim=128, nheads=2, maxseqlen=32)
+    model = model.to(device)
+    
+    # Simple training loop
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+    register_gradient_clipping(model, max_norm=5.0)
+    
+    print(f"Training on {len(SENTENCES)} sentences...")
+    for epoch in range(10):
+        model.train()
+        epoch_losses = []
+        for batch_idx, batch in enumerate(train_loader):
+            metrics = train_step(model, batch, optimizer, device, 1, batch_idx)
+            epoch_losses.append(metrics["loss"])
+        
+        if (epoch + 1) % 10 == 0:
+            avg_loss = sum(epoch_losses) / len(epoch_losses)
+            print(f"Epoch {epoch + 1}/100 - Loss: {avg_loss:.4f}")
