@@ -2,83 +2,12 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 import numpy as np
-from datasets import load_dataset
 from tqdm import tqdm
 from pathlib import Path
-import json
 from typing import Optional
-import tiktoken
 
 from nanolm.modules import Transformer, AttentionOutput
-
-
-class TextDataset:
-    """Simple text dataset using tiktoken for tokenization"""
-
-    def __init__(self, texts: list[str], seq_len: int, tokenizer):
-        self.tokenizer = tokenizer
-        self.seq_len = seq_len
-
-        # Tokenize all texts and concatenate
-        all_tokens = []
-        for text in texts:
-            tokens = tokenizer.encode(text)
-            all_tokens.extend(tokens)
-
-        self.tokens = torch.tensor(all_tokens, dtype=torch.long)
-
-    def __len__(self):
-        return max(1, len(self.tokens) // self.seq_len - 1)
-
-    def __getitem__(self, idx):
-        start = idx * self.seq_len
-        end = start + self.seq_len + 1  # +1 for target
-        chunk = self.tokens[start:end]
-
-        if len(chunk) < self.seq_len + 1:
-            # Pad if necessary
-            chunk = torch.cat(
-                [chunk, torch.zeros(self.seq_len + 1 - len(chunk), dtype=torch.long)]
-            )
-
-        return chunk[:-1], chunk[1:]  # input, target
-
-
-def get_dataloader(
-    dataset_name: str = "roneneldan/TinyStories",
-    split: str = "train",
-    seq_len: int = 2048,
-    batch_size: int = 32,
-    num_workers: int = 4,
-    max_samples: Optional[int] = None,
-):
-    """Create a dataloader from HuggingFace datasets"""
-
-    # Load tokenizer
-    tokenizer = tiktoken.get_encoding("gpt2")
-
-    # Load dataset
-    dataset = load_dataset(dataset_name, split=split)
-    if max_samples:
-        dataset = dataset.select(range(min(max_samples, len(dataset))))
-
-    # Extract texts
-    texts = [item["text"] for item in dataset]
-
-    # Create dataset
-    text_dataset = TextDataset(texts, seq_len, tokenizer)
-
-    # Create dataloader
-    dataloader = DataLoader(
-        text_dataset,
-        batch_size=batch_size,
-        shuffle=(split == "train"),
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=True,
-    )
-
-    return dataloader, tokenizer
+from nanolm.data import get_dataloader
 
 
 def register_gradient_clipping(model: nn.Module, max_norm: float = 1.0):
@@ -97,7 +26,7 @@ def register_gradient_clipping(model: nn.Module, max_norm: float = 1.0):
 
 def train_step(
     model: nn.Module,
-    batch: tuple[torch.Tensor, torch.Tensor],
+    batch: torch.Tensor,
     optimizer: optim.Optimizer,
     device: torch.device,
     grad_accum_steps: int = 1,
@@ -105,9 +34,8 @@ def train_step(
 ) -> dict:
     """Single training step with gradient accumulation"""
 
-    input_seq, target_seq = batch
-    input_seq = input_seq.to(device)
-    target_seq = target_seq.to(device)
+    batch = batch.to(device)  # this should be done in dataloader
+    input_seq, target_seq = batch[:, :-1], batch[:, 1:]
 
     # Forward pass
     output: AttentionOutput = model(input_seq, target_seq)
@@ -168,30 +96,57 @@ def save_checkpoint(
     optimizer: optim.Optimizer,
     epoch: int,
     step: int,
-    metrics: dict,
-    checkpoint_dir: Path,
+    checkpoint_path: Path,
+    metrics: Optional[dict] = None,
 ):
     """Save model checkpoint"""
 
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     checkpoint = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "epoch": epoch,
         "step": step,
-        "metrics": metrics,
     }
 
-    checkpoint_path = checkpoint_dir / f"checkpoint_epoch{epoch}_step{step}.pt"
+    if metrics:
+        checkpoint["metrics"] = metrics
+
     torch.save(checkpoint, checkpoint_path)
-
-    # Save config
-    config_path = checkpoint_dir / "config.json"
-    with open(config_path, "w") as f:
-        json.dump(metrics, f, indent=2)
-
+    print(f"Saved checkpoint to {checkpoint_path}")
     return checkpoint_path
+
+
+def load_checkpoint(
+    checkpoint_path: Path,
+    model: nn.Module,
+    optimizer: Optional[optim.Optimizer] = None,
+    device: Optional[torch.device] = None,
+) -> tuple[int, int]:
+    """Load model and optimizer state from checkpoint.
+
+    Returns:
+        tuple: (epoch, step) from the checkpoint
+    """
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    if optimizer and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    epoch = checkpoint.get("epoch", 0)
+    step = checkpoint.get("step", 0)
+    metrics = checkpoint.get("metrics", {})
+
+    print(f"Loaded checkpoint from epoch {epoch}, step {step}")
+    if metrics:
+        print(f"Checkpoint metrics: {metrics}")
+
+    return epoch, step
 
 
 def train(
@@ -212,7 +167,7 @@ def train(
     max_train_samples: Optional[int] = 100000,
     max_val_samples: Optional[int] = 10000,
     # Logging config
-    checkpoint_dir: str = "./checkpoints",
+    checkpoint_dir: Path = Path("./checkpoints"),
     eval_every: int = 500,
     save_every: int = 1000,
 ):
@@ -255,8 +210,6 @@ def train(
 
     # Training loop
     global_step = 0
-    checkpoint_dir = Path(checkpoint_dir)
-
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch + 1}/{num_epochs}")
 
@@ -296,15 +249,17 @@ def train(
 
             # Save checkpoint
             if global_step % save_every == 0 and global_step > 0:
-                checkpoint_path = save_checkpoint(
+                checkpoint_path = (
+                    checkpoint_dir / f"checkpoint_epoch{epoch}_step{global_step}.pt"
+                )
+                save_checkpoint(
                     model,
                     optimizer,
                     epoch,
                     global_step,
+                    checkpoint_path,
                     {"loss": metrics["loss"], "perplexity": metrics["perplexity"]},
-                    checkpoint_dir,
                 )
-                print(f"\nSaved checkpoint: {checkpoint_path}")
 
             global_step += 1
 
@@ -320,61 +275,36 @@ def train(
     )
 
     # Save final model
-    final_checkpoint = save_checkpoint(
+    final_checkpoint_path = checkpoint_dir / "final" / "checkpoint_final.pt"
+    save_checkpoint(
         model,
         optimizer,
-        num_epochs,
+        num_epochs - 1,
         global_step,
+        final_checkpoint_path,
         final_metrics,
-        checkpoint_dir / "final",
     )
-    print(f"Saved final model: {final_checkpoint}")
 
     return model
 
 
 if __name__ == "__main__":
-    # Simple test with 10 sentences
-    SENTENCES = [
-        "The cat sat on the mat.",
-        "Dogs love to play fetch.",
-        "The sun rises in the east.",
-        "Birds fly high in the sky.",
-        "Fish swim in the ocean.",
-        "Trees grow tall in the forest.",
-        "Flowers bloom in spring.",
-        "Rain falls from the clouds.",
-        "Stars shine bright at night.",
-        "The moon lights up the darkness.",
-    ]
-    
-    # Create simple dataloaders from sentences  
-    tokenizer = tiktoken.get_encoding("gpt2")
-    # Repeat sentences to have more tokens
-    train_sentences = SENTENCES * 10  # Repeat 10 times for more data
-    train_dataset = TextDataset(train_sentences, seq_len=32, tokenizer=tokenizer)
-    val_dataset = TextDataset(SENTENCES[-2:] * 5, seq_len=32, tokenizer=tokenizer)  # Last 2 for validation
-    
-    train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True, drop_last=False)
-    val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False, drop_last=False)
-    
-    # Small model for testing
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Transformer(50257, nblocks=2, dim=128, nheads=2, maxseqlen=32)
-    model = model.to(device)
-    
-    # Simple training loop
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
-    register_gradient_clipping(model, max_norm=5.0)
-    
-    print(f"Training on {len(SENTENCES)} sentences...")
-    for epoch in range(10):
-        model.train()
-        epoch_losses = []
-        for batch_idx, batch in enumerate(train_loader):
-            metrics = train_step(model, batch, optimizer, device, 1, batch_idx)
-            epoch_losses.append(metrics["loss"])
-        
-        if (epoch + 1) % 10 == 0:
-            avg_loss = sum(epoch_losses) / len(epoch_losses)
-            print(f"Epoch {epoch + 1}/100 - Loss: {avg_loss:.4f}")
+    # Example usage
+    model = train(
+        # Small model for testing
+        n_blocks=4,
+        dim=256,
+        n_heads=4,
+        max_seq_len=256,
+        # Small batches for testing
+        batch_size=8,
+        grad_accum_steps=2,
+        learning_rate=1e-3,
+        num_epochs=2,
+        # Limited data for testing
+        max_train_samples=1000,
+        max_val_samples=100,
+        # No wandb by default
+        eval_every=50,
+        save_every=100,
+    )

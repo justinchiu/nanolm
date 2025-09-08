@@ -28,9 +28,11 @@ class Rotary(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """Apply rotations at each timesteps"""
+        B, T, heads, dim = x.shape
         # batch x time x nheads x head_dim (x complex)
         xc = torch.view_as_complex(x.view(*x.shape[:-1], -1, 2))
-        return torch.view_as_real(xc * self.freqs_cis[None, :, None, :]).flatten(-2)
+        # if sequence below max timestep, get up to :T
+        return torch.view_as_real(xc * self.freqs_cis[None, :T, None, :]).flatten(-2)
 
 
 class SlowMha(nn.Module):
@@ -103,7 +105,7 @@ class Block(nn.Module):
         self.mha = SlowMha(dim, nheads, maxseqlen, dim)
         self.ffn = Ffn(dim)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         attn_out, attn = self.mha(norm(x))
         x = x + attn_out
         x = x + self.ffn(norm(x))
