@@ -13,28 +13,20 @@ class TextDataset(Dataset):
         self.tokenizer = tokenizer
         self.seq_len = seq_len
 
-        # Tokenize all texts and concatenate
-        all_tokens = []
-        for text in texts:
-            tokens = tokenizer.encode(text)
-            all_tokens.extend(tokens)
-
-        self.tokens = torch.tensor(all_tokens, dtype=torch.long)
+        self.tokens = [
+            torch.tensor(tokenizer.encode(text), dtype=torch.long) for text in texts
+        ]
 
     def __len__(self):
-        return max(1, len(self.tokens) // self.seq_len - 1)
+        return len(self.tokens)
 
     def __getitem__(self, idx):
-        start = idx * self.seq_len
-        end = start + self.seq_len + 1  # +1 for target
-        chunk = self.tokens[start:end]
-
+        chunk = self.tokens[idx]
         if len(chunk) < self.seq_len + 1:
             # Pad if necessary
             chunk = torch.cat(
                 [chunk, torch.zeros(self.seq_len + 1 - len(chunk), dtype=torch.long)]
             )
-
         return chunk
         # index into chunk after copying to gpu to save memory
         # return chunk[:-1], chunk[1:]  # input, target

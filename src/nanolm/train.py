@@ -6,7 +6,7 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import Optional
 
-from nanolm.modules import Transformer, AttentionOutput
+from nanolm.modules import Transformer, TransformerOutput
 from nanolm.data import get_dataloader
 
 
@@ -38,7 +38,7 @@ def train_step(
     input_seq, target_seq = batch[:, :-1], batch[:, 1:]
 
     # Forward pass
-    output: AttentionOutput = model(input_seq, target_seq)
+    output: TransformerOutput = model(input_seq, target_seq, None, None)
 
     # Calculate loss (negative log likelihood)
     loss = -output.logprobs.mean() / grad_accum_steps
@@ -77,7 +77,7 @@ def evaluate(
             input_seq = input_seq.to(device)
             target_seq = target_seq.to(device)
 
-            output: AttentionOutput = model(input_seq, target_seq)
+            output: TransformerOutput = model(input_seq, target_seq)
 
             batch_loss = -output.logprobs.sum().item()
             batch_tokens = output.logprobs.numel()
