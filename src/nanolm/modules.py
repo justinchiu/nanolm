@@ -11,7 +11,7 @@ class TransformerOutput(BaseModel):
 
     logprobs: Tensor
     attentions: list[Tensor]
-    lengths: list[int]
+    lengths: list[Tensor]
 
 
 class Rotary(nn.Module):
@@ -41,12 +41,11 @@ class Rotary(nn.Module):
             )
         else:
             # shift by the required indices when encoding
-            import pdb
-
-            pdb.set_trace()
-            return torch.view_as_real(xc * self.freqs_cis[None, :T, None, :]).flatten(
-                -2
-            )
+            # create indices for each batch element based on their shift
+            batch_indices = shift[:, None] + torch.arange(T, device=shift.device)
+            # index into freqs_cis using the shifted indices
+            shifted_freqs = self.freqs_cis[batch_indices]  # B x T x dim//2
+            return torch.view_as_real(xc * shifted_freqs[:, :, None, :]).flatten(-2)
 
 
 class SlowMha(nn.Module):
@@ -88,9 +87,7 @@ class SlowMha(nn.Module):
         shift = None
         if kvcache is not None:
             # compute shift
-            import pdb
-
-            pdb.set_trace()
+            shift = kvcache.lengths[seqids, self.blockidx]
         if self.pos:
             q = self.rotary(q, shift)
             k = self.rotary(k, shift)
@@ -111,7 +108,7 @@ class SlowMha(nn.Module):
             # reshape is bad
             return self.out_proj(output.reshape(B, T, -1)), attn, kvlengths
         else:
-            return self.out_proj(output.reshape(B, T, -1)[:, -1]), attn, kvlengths
+            return self.out_proj(output.reshape(B, T, -1)[:, [-1]]), attn, kvlengths
 
 
 class Ffn(nn.Module):

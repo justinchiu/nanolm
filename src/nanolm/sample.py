@@ -24,7 +24,7 @@ class KvCache:
         )
 
 
-def print_generations(generations: list[list[torch.Tensor]], tokenizer):
+def print_generations(generations: list[list[int]], tokenizer):
     for gen in generations:
         print(tokenizer.decode(gen))
 
@@ -38,20 +38,23 @@ def sample(
     model: torch.nn.Module,
     eos_id: int,
     tokenizer,
-):
+) -> list[list[int]]:
     """For simplicity, iterate over all num_steps.
     Prefill will be done one step at a time. Inefficient but easier to interleave prefill and generation.
     Always check whether we are in prefill or generation at each timestep and token.
     """
 
+    not_started = [True for _ in range(len(input_ids))]
     completed = [False for _ in range(len(input_ids))]
-    generations = [[input_ids[x][0]] for x in range(len(input_ids))]
+    generations = [[int(input_ids[x][0].item())] for x in range(len(input_ids))]
     prefix_lens = [len(x) for x in input_ids]
 
     batch_ids = torch.tensor([x[0] for x in input_ids[:batch_size]], dtype=torch.long)[
         :, None
     ]
     current_seqs = list(range(batch_size))
+    for seq in current_seqs:
+        not_started[seq] = False
     for i in range(num_steps):
         # always compute logprobs and sample
         output = model(batch_ids, None, kvcache, current_seqs)
@@ -63,11 +66,13 @@ def sample(
         for batchidx in range(batch_size):
             seqid = current_seqs[batchidx]
             genlen = len(generations[seqid])
-            if genlen >= prefix_lens[seqid]:
-                generations[seqid].append(next_tokens[batchidx])
+            if completed[seqid]:
+                continue
+            elif genlen >= prefix_lens[seqid]:
+                generations[seqid].append(int(next_tokens[batchidx].item()))
             else:
                 true_token = input_ids[seqid][genlen]
-                generations[seqid].append(true_token)
+                generations[seqid].append(int(true_token.item()))
                 next_tokens[batchidx] = true_token
 
         # Debug: print next tokens
@@ -76,15 +81,19 @@ def sample(
 
         # check if any sequences finished
         is_complete = (next_tokens == eos_id) | (next_tokens == 0)
-
         for batchidx in range(batch_size):
-            if is_complete:
+            if is_complete[batchidx]:
                 seqid = current_seqs[batchidx]
                 completed[seqid] = True
-                # assign new sequence for prefill
-                current_seqs[batchidx] = completed.index(False)
+
+        # assign new sequences for prefill
+        for batchidx in range(batch_size):
+            if is_complete[batchidx] and any(not_started):
+                seqid = not_started.index(True)
+                not_started[seqid] = False
+                current_seqs[batchidx] = seqid
                 # populate next_tokens, which must exist (at least bos)
-                next_tokens[seqid] = input_ids[seqid][0]
+                next_tokens[batchidx] = input_ids[seqid][0]
 
         if all(completed):
             break

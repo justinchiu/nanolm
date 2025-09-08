@@ -144,7 +144,7 @@ def main():
         nblocks=model.nblocks,
         nheads=model.nheads,
     )
-    token_ids, kvcache = sample(
+    generations = sample(
         num_steps=20,
         batch_size=4,
         input_ids=tokens,
@@ -153,13 +153,10 @@ def main():
         eos_id=eos_id,
         tokenizer=tokenizer,
     )
-    import pdb
-
-    pdb.set_trace()
-    generated_text = [
-        tokenizer.decode(tokens.cpu().numpy().tolist()) for tokens in token_ids
-    ]
-    print(f"Generated: {generated_text}")
+    generated_text = [tokenizer.decode(tokens) for tokens in generations]
+    print("Generated:")
+    for text in generated_text:
+        print(text)
 
 
 if __name__ == "__main__":
