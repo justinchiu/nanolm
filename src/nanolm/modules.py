@@ -11,7 +11,7 @@ class TransformerOutput(BaseModel):
 
     logprobs: Tensor
     attentions: list[Tensor]
-    lengths: list[Tensor]
+    lengths: list[Tensor | None]
 
 
 class Rotary(nn.Module):
