@@ -13,6 +13,7 @@ class KvCache:
     def extend(
         self, new_k: torch.Tensor, new_v: torch.Tensor, ids: torch.Tensor, blockidx: int
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # for simplicity, only one block at a time!
         self.kcache[ids, self.lengths[ids, blockidx], blockidx] = new_k[:, -1]
         self.vcache[ids, self.lengths[ids, blockidx], blockidx] = new_v[:, -1]
         self.lengths[ids, blockidx] += 1
