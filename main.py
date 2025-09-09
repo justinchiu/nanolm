@@ -6,6 +6,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 from pathlib import Path
 import tiktoken
+from functools import partial
 
 from nanolm.modules import Transformer
 from nanolm.train import (
@@ -15,7 +16,7 @@ from nanolm.train import (
     load_checkpoint,
 )
 from nanolm.data import TextDataset
-from nanolm.sample import sample, KvCache
+from nanolm.sample import sample, sample_fn, KvCache
 
 
 # 10 simple sentences for training
@@ -152,6 +153,7 @@ def main():
         model=model,
         eos_id=eos_id,
         tokenizer=tokenizer,
+        sample_fn=partial(sample_fn, k=10, p=0.9),
     )
     generated_text = [tokenizer.decode(tokens) for tokens in generations]
     print("Generated:")

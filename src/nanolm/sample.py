@@ -39,6 +39,7 @@ def sample(
     model: torch.nn.Module,
     eos_id: int,
     tokenizer,
+    sample_fn,
 ) -> list[list[int]]:
     """For simplicity, iterate over all num_steps.
     Prefill will be done one step at a time. Inefficient but easier to interleave prefill and generation.
@@ -60,7 +61,7 @@ def sample(
         # always compute logprobs and sample
         output = model(batch_ids, None, kvcache, current_seqs)
         next_token_logprobs = output.logprobs[:, -1]
-        next_tokens = torch.multinomial(next_token_logprobs.exp(), num_samples=1)
+        next_tokens = sample_fn(next_token_logprobs)
 
         # check if generation or prefill
         # TODO: can be batched with tensor ops
@@ -104,7 +105,35 @@ def sample(
     return generations
 
 
+def sample_fn(logprobs, k=0, p=1.0, temperature=1.0):
+    logprobs = logprobs / temperature
+    if k > 0:
+        topk = logprobs.topk(k, -1)
+        logprob_mask = torch.ones_like(logprobs, dtype=torch.bool)
+        logprob_mask[torch.arange(logprobs.shape[0])[:, None], topk.indices] = 0
+        logprobs = logprobs.masked_fill(logprob_mask, float("-inf"))
+    if p < 1.0:
+        sorted_logprobs = logprobs.sort(dim=-1, descending=True)
+        cumprobs = sorted_logprobs.values.exp().cumsum(-1)
+        mask = cumprobs >= p
+        # shift mask to the right to get first token over p
+        mask[:, 1:] = mask[:, :-1]
+        mask[:, 0] = False
+        logprob_mask = torch.ones_like(logprobs, dtype=torch.bool)
+        logprob_mask[
+            torch.arange(logprobs.shape[0])[:, None], sorted_logprobs.indices
+        ] = mask
+        # equivalent to logprob_mask.scatter(-1, sorted_logprobs.indices, mask)
+        logprobs = logprobs.masked_fill(logprob_mask, float("-inf"))
+    return torch.multinomial(logprobs.exp(), num_samples=1)
+
+
+def beamsearch(model, prefix):
+    pass
+
+
 if __name__ == "__main__":
+    # kv cache tests
     kvcache = KvCache(4, 1, 8, 1, 3)
     kvcache.extend(
         torch.ones(2, 1, 1, 3), torch.ones(2, 1, 1, 3), torch.tensor([1, 2]), blockidx=0
@@ -116,3 +145,5 @@ if __name__ == "__main__":
     assert (kvcache.kcache[2, 0] == 1).all()
     assert kvcache.kcache[0].sum() == 0
     assert kvcache.kcache[3].sum() == 0
+
+    # sampling tests
