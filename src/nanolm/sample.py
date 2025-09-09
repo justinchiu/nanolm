@@ -120,10 +120,10 @@ def sample_fn(logprobs, k=0, p=1.0, temperature=1.0):
         mask[:, 1:] = mask[:, :-1]
         mask[:, 0] = False
         logprob_mask = torch.ones_like(logprobs, dtype=torch.bool)
+        # advanced indexing, equivalent to logprob_mask.scatter(-1, sorted_logprobs.indices, mask)
         logprob_mask[
             torch.arange(logprobs.shape[0])[:, None], sorted_logprobs.indices
         ] = mask
-        # equivalent to logprob_mask.scatter(-1, sorted_logprobs.indices, mask)
         logprobs = logprobs.masked_fill(logprob_mask, float("-inf"))
     return torch.multinomial(logprobs.exp(), num_samples=1)
 
